@@ -1,0 +1,36 @@
+{
+  "session_id": "2026-09-13_152629",
+  "cachybench_version": "1.0.0",
+  "config_file": "benchmarks.toml",
+  "started": "2026-09-13T15:26:29",
+  "finished": "2026-09-13T16:14:46",
+  "environment": {
+    "Distribution": "CachyOS",
+    "Kernel": "7.2.3-1-cachyos",
+    "Architecture": "x86_64",
+    "CPU": "AMD Ryzen 9 9950X3D 16-Core Processor",
+    "CPU topology": "16C / 32T",
+    "Memory": "92.0 GiB",
+    "GPU(s)": "GB202 [GeForce RTX 5090] NVIDIA Corporation; Granite Ridge [Radeon Graphics] Gigabyte Technology Co., Ltd",
+    "CPU governor": "powersave",
+    "CPU scaling driver": "amd-pstate-epp",
+    "Energy perf preference": "balance_performance",
+    "Session type": "wayland",
+    "Desktop": "KDE",
+    "Python": "3.14.7",
+    "OpenGL / Mesa": "4.6.0 NVIDIA 610.57.04",
+    "Vulkan driver": "NVIDIA 610.57.04",
+    "card0 dpm level": "auto",
+    "NVIDIA GPU": "NVIDIA GeForce RTX 5090",
+    "NVIDIA driver": "610.57.04",
+    "Power limit": "575.00 W",
+    "Max graphics clock": "3090 MHz",
+    "Proton builds": "Proton - Experimental, Proton EasyAntiCheat Runtime",
+    "MangoHud": "0.8.4-1+"
+  },
+  "warnings": [
+    "CPU governor is 'powersave'. For repeatable results use: sudo cpupower frequency-set -g performance",
+    "Wayland session: some compositors force vsync, which caps FPS. Disable the compositor's vsync or use a fullscreen (not borderless) window if your numbers look pinned to the refresh rate."
+  ],
+  "results": []
+}

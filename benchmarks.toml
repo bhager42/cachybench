@@ -1,0 +1,162 @@
+# cachybench configuration
+#
+# Run `cachybench list-games` to find the appid of anything you have installed,
+# then add a [[game]] block for it. `cachybench run --dry-run` prints the plan
+# and a time estimate without touching anything.
+
+[defaults]
+# Applied to every target unless the target overrides it.
+runs = 3                  # repeats per target; 3 is the minimum for a usable median
+cooldown_s = 60           # idle between runs so the card is not hotter each time
+cooldown_temp_c = 50      # additionally wait for the GPU to drop below this (omit to skip)
+warmup_s = 30             # discarded before logging starts: shader compilation, fade-ins
+log_duration_s = 90       # length of the measured window
+launch_timeout_s = 300    # first Proton launch can be slow; raise if a game times out
+run_timeout_s = 1800      # hard ceiling per run
+trim_start_s = 0.0        # extra trim applied when analysing, on top of warmup_s
+trim_end_s = 0.0
+results_dir = "./results"
+mangohud_extra = ""       # comma-separated extra MangoHud options, if you want any
+
+
+# ---------------------------------------------------------------------------
+# Games
+# ---------------------------------------------------------------------------
+#
+# mode = "builtin"  The game has a benchmark that runs and exits on its own,
+#                   usually via a launch argument. Fully hands-off: the script
+#                   waits for the process to disappear.
+#
+# mode = "timed"    The script logs a fixed window and then closes the game.
+#                   Good for anything that plays an attract/demo loop, or when
+#                   you want to measure a menu or a hub area.
+#
+# mode = "manual"   You start the in-game benchmark yourself and press Shift+F2
+#                   to begin logging; the script handles everything else and
+#                   closes the game afterwards. Most AAA games with a built-in
+#                   benchmark land here, because their benchmark lives behind a
+#                   settings menu with no command-line entry point.
+#
+# Before trusting `launch_args`, check the game's page on pcgamingwiki.com —
+# benchmark flags vary by title and by version, and a wrong flag usually just
+# launches the game normally.
+
+[[game]]
+name = "Cyberpunk 2077"
+appid = 1091500
+mode = "manual"
+log_duration_s = 90
+notes = "Benchmark lives in Settings > Graphics > Run Benchmark"
+
+# Optional: write the graphics settings into the game's own UserSettings.json
+# before every launch, so each run is measured under exactly this
+# configuration. Names and allowed values come from the game's file — run
+# `cachybench settings Cyberpunk` to list them. The game validates settings
+# against your hardware on start-up, so anything it silently resets is
+# reported after the run (set strict = true to abort the target instead).
+# Your original settings file is restored when the target finishes.
+[game.settings]
+handler = "cyberpunk2077"
+strict = false
+[game.settings.values]
+WindowMode = "Fullscreen"
+Resolution = "3440x1440"
+VSync = "Off"
+RayTracing = false
+TextureQuality = "High"
+
+[[game]]
+name = "Shadow of the Tomb Raider"
+appid = 750920
+mode = "manual"
+log_duration_s = 90
+notes = "Benchmark is at the bottom of the graphics options page"
+
+[[game]]
+name = "Counter-Strike 2"
+appid = 730
+mode = "timed"
+warmup_s = 60
+log_duration_s = 120
+enabled = false
+notes = "Load a workshop benchmark map or an aim_botz-style map before running"
+
+# A worked example of a fully hands-off entry. Only fill in launch_args once
+# you have confirmed the flag works by running the game with it by hand.
+# [[game]]
+# name = "Some Game With A CLI Benchmark"
+# appid = 000000
+# mode = "builtin"
+# launch_args = "-benchmark -nologo"
+# run_timeout_s = 900
+# process_hint = "somegame.exe"   # optional: match on process name if path
+#                                 # detection struggles with an odd launcher
+
+
+# ---------------------------------------------------------------------------
+# Synthetic benchmarks
+# ---------------------------------------------------------------------------
+#
+# These need no Steam and no interaction at all. Anything not installed is
+# skipped with a warning, so it is safe to leave entries here.
+#
+# Install what you want:
+#   sudo pacman -S p7zip sysbench stress-ng glmark2 vkmark
+
+[[synthetic]]
+name = "7-Zip Compression"
+command = "7z b -mmt$(nproc)"
+parser = "7zip"
+unit = "MIPS"
+notes = "Multi-threaded CPU, integer and memory bound"
+
+[[synthetic]]
+name = "sysbench CPU"
+command = "sysbench cpu --threads=$(nproc) --time=30 --cpu-max-prime=20000 run"
+parser = "sysbench"
+unit = "events/sec"
+
+[[synthetic]]
+name = "stress-ng matrixprod"
+command = "stress-ng --cpu 0 --cpu-method matrixprod --metrics-brief -t 30s"
+parser = "stress-ng"
+unit = "bogo ops/s"
+
+[[synthetic]]
+name = "glmark2 (OpenGL)"
+command = "glmark2 --fullscreen"
+parser = "glmark2"
+unit = "score"
+runs = 2
+
+[[synthetic]]
+name = "vkmark (Vulkan)"
+command = "vkmark --fullscreen"
+parser = "vkmark"
+unit = "score"
+runs = 2
+
+# Unigine Superposition, if you have it extracted somewhere. Its CLI runs
+# headless-ish and prints a score; adjust the path to match your install.
+# [[synthetic]]
+# name = "Unigine Superposition"
+# command = "./bin/superposition_cli -preset 1 -video_fullscreen 1 -mode 1"
+# cwd = "/opt/Superposition"
+# parser = "unigine"
+# runs = 1
+# run_timeout_s = 900
+
+# Geekbench 6, if installed. --no-upload keeps results local.
+# [[synthetic]]
+# name = "Geekbench 6"
+# command = "geekbench6 --no-upload"
+# parser = "geekbench"
+# runs = 1
+# run_timeout_s = 1200
+
+# Anything not covered by a built-in parser: supply your own regex. A named
+# group becomes a column; an unnamed group is recorded as "Score".
+# [[synthetic]]
+# name = "My Custom Benchmark"
+# command = "/opt/mybench/run.sh --quick"
+# pattern = "Result:\\s+(?P<Throughput>[\\d.]+)\\s+MB/s"
