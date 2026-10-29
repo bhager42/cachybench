@@ -12,11 +12,12 @@ import shutil
 import signal
 import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import gamesettings, metrics, report, runners, sysinfo
+from . import gamesettings, metrics, notify, report, runners, sysinfo
 from .config import Config, ConfigError, GameTarget, SyntheticTarget, load as load_config
 
 VERSION = "1.0.0"
@@ -173,7 +174,33 @@ def run_game_target(
         "aggregate": {},
         "errors": [],
     }
+    # Registered before the first run so every flush carries the runs completed
+    # so far. Adding it only once the target finished meant an interruption
+    # mid-target dropped its finished runs from session.json and the report.
+    session.add(result)
 
+    try:
+        _run_game_target(target, cfg, session, write_conf, result, install_dir)
+    finally:
+        result["aggregate"] = metrics.aggregate_runs([r["stats"] for r in result["runs"]])
+        session.flush()
+
+    if result["aggregate"].get("run_spread_pct", 0) > 3:
+        warn(
+            f"Run-to-run spread is {result['aggregate']['run_spread_pct']}%. "
+            "Results this noisy will not resolve small differences."
+        )
+    return result
+
+
+def _run_game_target(
+    target: GameTarget,
+    cfg: Config,
+    session: Session,
+    write_conf: Any,
+    result: dict[str, Any],
+    install_dir: Path | None,
+) -> None:
     if install_dir is None:
         message = (
             f"App {target.appid} is not installed in any Steam library — skipping. "
@@ -181,7 +208,7 @@ def run_game_target(
         )
         error(message)
         result["errors"].append(message)
-        return result
+        return
 
     log(f"Install directory: {install_dir}")
 
@@ -205,7 +232,7 @@ def run_game_target(
             except gamesettings.SettingsError as exc:
                 error(f"Game settings: {exc}")
                 result["errors"].append(f"settings: {exc}")
-                return result
+                return
             log(f"Settings file: {managed.path}")
             result["settings"] = {
                 "handler": target.settings.handler,
@@ -218,14 +245,6 @@ def run_game_target(
                 print(f"    {change.option.qualified} = {change.new!r}{marker}")
 
         _run_game_loop(target, cfg, session, write_conf, result, install_dir, target_dir, managed)
-
-    result["aggregate"] = metrics.aggregate_runs([r["stats"] for r in result["runs"]])
-    if result["aggregate"].get("run_spread_pct", 0) > 3:
-        warn(
-            f"Run-to-run spread is {result['aggregate']['run_spread_pct']}%. "
-            "Results this noisy will not resolve small differences."
-        )
-    return result
 
 
 def _run_game_loop(
@@ -243,6 +262,7 @@ def _run_game_loop(
     duration = target.resolve(cfg.defaults, "log_duration_s")
     launch_timeout = target.resolve(cfg.defaults, "launch_timeout_s")
     run_timeout = target.resolve(cfg.defaults, "run_timeout_s")
+    start_timeout = target.resolve(cfg.defaults, "manual_start_timeout_s")
     cool = target.resolve(cfg.defaults, "cooldown_s")
     trim_start = target.resolve(cfg.defaults, "trim_start_s")
     trim_end = target.resolve(cfg.defaults, "trim_end_s")
@@ -303,9 +323,19 @@ def _run_game_loop(
                 print(
                     f"\n  {YELLOW}Manual step:{RESET} start the in-game benchmark, then press "
                     f"{BOLD}Shift+F2{RESET} to begin logging.\n"
-                    f"  Logging stops automatically after {duration}s."
+                    f"  Logging stops automatically after {duration}s. If nothing is logged "
+                    f"within ~{start_timeout}s, the rest of this game's runs are skipped."
                 )
-                log_path = wait_for_log(run_dir, run_timeout)
+                notify.send(
+                    f"cachybench: {target.name} needs you",
+                    f"Run {run_index}/{total_runs}: start the benchmark and press Shift+F2 "
+                    f"within {max(1, round(start_timeout / 60))} min.",
+                    cfg.defaults.notify_url,
+                )
+                # Nobody pressing Shift+F2 should cost minutes, not the whole
+                # run_timeout. The window still covers the logging itself,
+                # because MangoHud may only write the file once logging stops.
+                log_path = wait_for_log(run_dir, min(run_timeout, start_timeout + duration + 30))
                 clear_status()
                 runners.terminate_game(install_dir, target.process_hint)
 
@@ -337,6 +367,19 @@ def _run_game_loop(
             )
             error(message)
             result["errors"].append(message)
+            if target.mode == "manual":
+                # Either nobody is there to press Shift+F2 or the overlay is not
+                # attaching; the remaining runs would fail the same way.
+                skipped = total_runs - run_index
+                if skipped:
+                    message = (
+                        f"No log from manual run {run_index} — skipping the remaining "
+                        f"{skipped} run(s) of {target.name}"
+                    )
+                    warn(message)
+                    result["errors"].append(message)
+                session.flush()
+                break
         else:
             try:
                 frame_log = metrics.parse_mangohud_csv(log_path)
@@ -414,6 +457,7 @@ def run_synthetic_target(
         "runs": [],
         "errors": [],
     }
+    session.add(result)
 
     binary = target.command.strip().split()[0]
     if not shutil.which(binary) and not Path(binary).exists():
@@ -528,21 +572,50 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     session = Session(Path(cfg.defaults.results_dir), cfg.path)
     log(f"Session directory: {session.dir}")
+    notify_url = cfg.defaults.notify_url
+    started = time.monotonic()
 
     interrupted = False
-    with runners.managed_mangohud_conf() as write_conf:
+    crashed = False
+    with contextlib.ExitStack() as stack:
+        if not args.no_inhibit and not stack.enter_context(
+            runners.inhibit_sleep("cachybench benchmark session")
+        ):
+            warn(
+                "Could not take a sleep inhibitor (systemd-inhibit missing or refused). "
+                "Disable suspend yourself or the machine may sleep mid-session."
+            )
+        write_conf = stack.enter_context(runners.managed_mangohud_conf())
         try:
             for target in targets:
                 if isinstance(target, GameTarget):
-                    session.add(run_game_target(target, cfg, session, write_conf))
+                    result = run_game_target(target, cfg, session, write_conf)
                 else:
-                    session.add(run_synthetic_target(target, cfg, session))
+                    result = run_synthetic_target(target, cfg, session)
+                session.flush()
+                if result["errors"] and not result["runs"]:
+                    notify.send(
+                        f"cachybench: {target.name} failed",
+                        result["errors"][-1],
+                        notify_url,
+                        urgent=True,
+                    )
         except (KeyboardInterrupt, Interrupted):
             clear_status()
             interrupted = True
             warn("Interrupted — writing a report from what completed")
+        except Exception:  # noqa: BLE001 - an unattended session must still report
+            clear_status()
+            crashed = True
+            traceback.print_exc()
+            error("cachybench crashed — writing a report from what completed")
 
     session.finish()
+    elapsed = f"{(time.monotonic() - started) / 60:.0f} min"
+    failed = [r["name"] for r in session.data["results"] if r["errors"] and not r["runs"]]
+    summary = f"{len(session.data['results'])} target(s) in {elapsed}"
+    if failed:
+        summary += f"; failed: {', '.join(failed)}"
 
     heading("Report")
     out = args.output or (session.dir / f"benchmarks_{session.session_id}.xlsx")
@@ -553,17 +626,35 @@ def cmd_run(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001 - never lose the raw data over a report bug
         error(f"Failed to build the workbook: {exc}")
         log(f"Raw results are intact. Retry with: cachybench report {session.dir}")
+        notify.send(
+            "cachybench: report failed",
+            f"{summary}. Raw results are in {session.dir}",
+            notify_url,
+            urgent=True,
+        )
         return 1
 
-    if shutil.which("notify-send"):
-        import subprocess
+    if crashed:
+        notify.send("cachybench crashed", f"{summary}. Partial report: {path}", notify_url, urgent=True)
+    elif interrupted:
+        notify.send("cachybench interrupted", f"{summary}. Partial report: {path}", notify_url)
+    else:
+        notify.send("cachybench finished", f"{summary}. Report: {path}", notify_url, urgent=bool(failed))
 
-        subprocess.run(
-            ["notify-send", "cachybench", f"Benchmark session finished\n{path}"],
-            check=False,
-        )
+    return 1 if interrupted or crashed else 0
 
-    return 1 if interrupted else 0
+
+def cmd_test_notify(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    url = cfg.defaults.notify_url
+    if not url:
+        error("notify_url is not set in [defaults]. Example: notify_url = \"https://ntfy.sh/<topic>\"")
+        return 1
+    if not notify.push(url, "cachybench test", "Notifications are working."):
+        error(f"Could not deliver to {url}")
+        return 1
+    ok(f"Sent a test notification to {url}")
+    return 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -729,6 +820,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         fatal=False,
     )
     check(
+        "systemd-inhibit present",
+        bool(shutil.which("systemd-inhibit")),
+        "" if shutil.which("systemd-inhibit") else "the session cannot stop the machine sleeping mid-run",
+        fatal=False,
+    )
+    check(
         "lm_sensors present",
         bool(shutil.which("sensors")),
         "optional: sudo pacman -S lm_sensors",
@@ -739,6 +836,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         try:
             cfg = load_config(args.config)
             check("Config parses", True, f"{len(cfg.targets)} target(s)")
+            check(
+                "Phone notifications",
+                bool(cfg.defaults.notify_url),
+                cfg.defaults.notify_url
+                or "optional: set notify_url in [defaults], then 'cachybench test-notify'",
+                fatal=False,
+            )
             for game in cfg.games:
                 if not game.enabled:
                     continue
@@ -833,7 +937,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="restart Steam with MANGOHUD=1 so Vulkan titles get the overlay automatically",
     )
+    run.add_argument(
+        "--no-inhibit",
+        action="store_true",
+        help="do not block suspend/idle for the duration of the session",
+    )
     run.set_defaults(func=cmd_run)
+
+    note = sub.add_parser("test-notify", help="send a test notification to check notify_url")
+    note.add_argument("-c", "--config", default="benchmarks.toml")
+    note.set_defaults(func=cmd_test_notify)
 
     rep = sub.add_parser("report", help="rebuild a workbook from a session directory")
     rep.add_argument("session_dir")

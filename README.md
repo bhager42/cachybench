@@ -86,7 +86,7 @@ you Ctrl-C or the script crashes.
 |---|---|---|
 | `builtin` | Game is launched with a benchmark flag, runs, and exits on its own. The script waits for the process to disappear. | Fully |
 | `timed` | Script logs a fixed window, then closes the game. | Fully |
-| `manual` | Script launches the game; you navigate to the benchmark and press **Shift+F2**; logging stops itself after `log_duration_s` and the script closes the game. | One keypress per run |
+| `manual` | Script launches the game; you navigate to the benchmark and press **Shift+F2**; logging stops itself after `log_duration_s` and the script closes the game. If nothing is logged within `manual_start_timeout_s` (5 minutes), the remaining runs of that game are skipped. | One keypress per run |
 
 Being straight about this: **most AAA games with a built-in benchmark are
 `manual`.** Cyberpunk 2077, Shadow of the Tomb Raider, Hitman and the rest put
@@ -98,6 +98,8 @@ spreadsheet.
 
 If you want a session you can genuinely walk away from, build it out of
 `synthetic` entries and any `builtin` games you have. Those need nothing at all.
+See [Leaving it running](#leaving-it-running) for what happens when a `manual`
+game comes up and nobody is there.
 
 Before setting `launch_args` for a `builtin` entry, check the game on
 [PCGamingWiki](https://www.pcgamingwiki.com/) and confirm the flag works by
@@ -119,7 +121,9 @@ cooldown_temp_c = 50   # also wait for the GPU to drop below this
 warmup_s = 30          # discarded before logging: shader compilation, fade-ins
 log_duration_s = 90    # length of the measured window
 launch_timeout_s = 300 # raise this if a first Proton launch times out
+manual_start_timeout_s = 300  # manual mode: how long to wait for Shift+F2
 results_dir = "./results"
+notify_url = ""        # optional phone notifications, see "Leaving it running"
 
 [[game]]
 name = "Cyberpunk 2077"
@@ -218,6 +222,47 @@ for the GPU to actually reach a temperature rather than trusting a fixed delay.
 
 ---
 
+## Leaving it running
+
+`cachybench run` is built to be left alone:
+
+- **No sleeping.** For the length of the session the machine is kept from
+  suspending or going idle through a `systemd-inhibit` lock, released when the
+  session ends. Pass `--no-inhibit` to skip it. KDE's screen locker may still
+  kick in; games usually block it while they run, but if yours does not, turn
+  off the automatic lock under System Settings → Screen Locking.
+- **Unanswered manual runs are cheap.** When a `manual` game logs nothing
+  within `manual_start_timeout_s` (default 300) plus the logging window, the
+  game is closed and the rest of that game's runs are skipped. The session
+  moves on to the next target. Before, every run waited out the whole
+  `run_timeout_s`, which was 30 minutes per run with nobody there.
+- **Notifications on your phone.** `notify-send` only shows on the PC that is
+  running the benchmark. Set `notify_url` to any [ntfy](https://ntfy.sh)
+  topic to also get a push when:
+  - a manual game is waiting for Shift+F2,
+  - a target fails completely,
+  - the session finishes, is interrupted or crashes, with a short summary.
+
+  ```toml
+  [defaults]
+  notify_url = "https://ntfy.sh/pick-a-long-random-topic-name"
+  ```
+
+  Subscribe to the same topic in the ntfy app, then check it works:
+
+  ```bash
+  cachybench test-notify
+  ```
+
+  Anyone who knows a public ntfy.sh topic name can read it, so pick a name
+  nobody would guess, or point it at your own ntfy server.
+- **Partial results are kept.** Every completed run is in `session.json` as
+  soon as it finishes, so a crash, Ctrl-C or power cut mid-game still leaves
+  that game's earlier runs in the report. If the script itself crashes, it
+  still writes the workbook from what completed and sends a notification.
+
+---
+
 ## Output
 
 ```
@@ -281,11 +326,8 @@ against.
 sudo cpupower frequency-set -g performance     # CachyOS often defaults elsewhere
 ```
 
-Run under `systemd-inhibit` so nothing sleeps or blanks mid-session:
-
-```bash
-systemd-inhibit --what=idle:sleep --why="benchmarking" cachybench run
-```
+`cachybench run` holds a `systemd-inhibit` lock for the whole session, so
+the machine will not sleep mid-run.
 
 Also worth doing: close browsers and chat apps, disable compositor vsync if your
 FPS looks pinned to your refresh rate, and prefer exclusive fullscreen over

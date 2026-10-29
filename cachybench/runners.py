@@ -378,6 +378,45 @@ def launch_steam_app(appid: int, launch_args: str = "") -> None:
     )
 
 
+@contextlib.contextmanager
+def inhibit_sleep(why: str) -> Iterator[bool]:
+    """Hold a logind idle/sleep inhibitor for the duration of the block.
+
+    A machine that suspends an hour into an unattended session loses the run in
+    progress and every target after it. ``systemd-inhibit`` holds the lock for
+    as long as its child lives, so the child is a ``sleep`` we kill on exit.
+    Yields False when no inhibitor could be taken.
+    """
+    if not shutil.which("systemd-inhibit"):
+        yield False
+        return
+    try:
+        holder = subprocess.Popen(
+            [
+                "systemd-inhibit",
+                "--what=idle:sleep",
+                "--who=cachybench",
+                f"--why={why}",
+                "--mode=block",
+                "sleep",
+                "infinity",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        yield False
+        return
+    try:
+        time.sleep(0.5)
+        yield holder.poll() is None
+    finally:
+        if holder.poll() is None:
+            holder.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                holder.wait(timeout=5)
+
+
 def restart_steam_with_mangohud(wait_s: int = 45) -> None:
     """Restart Steam with MANGOHUD=1 so every Vulkan game gets the overlay.
 

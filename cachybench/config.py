@@ -24,12 +24,14 @@ class Defaults:
     cooldown_temp_c: int | None = None
     launch_timeout_s: int = 300
     run_timeout_s: int = 1800
+    manual_start_timeout_s: int = 300
     warmup_s: int = 30
     log_duration_s: int = 90
     trim_start_s: float = 0.0
     trim_end_s: float = 0.0
     results_dir: str = "./results"
     mangohud_extra: str = ""
+    notify_url: str = ""
 
 
 @dataclass
@@ -59,6 +61,7 @@ class GameTarget:
     log_duration_s: int | None = None
     run_timeout_s: int | None = None
     launch_timeout_s: int | None = None
+    manual_start_timeout_s: int | None = None
     cooldown_s: int | None = None
     trim_start_s: float | None = None
     trim_end_s: float | None = None

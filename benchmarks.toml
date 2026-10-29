@@ -13,10 +13,14 @@ warmup_s = 30             # discarded before logging starts: shader compilation,
 log_duration_s = 90       # length of the measured window
 launch_timeout_s = 300    # first Proton launch can be slow; raise if a game times out
 run_timeout_s = 1800      # hard ceiling per run
+manual_start_timeout_s = 300  # manual mode: give up on a game if nobody presses Shift+F2 by then
 trim_start_s = 0.0        # extra trim applied when analysing, on top of warmup_s
 trim_end_s = 0.0
 results_dir = "./results"
 mangohud_extra = ""       # comma-separated extra MangoHud options, if you want any
+# Push notifications to your phone for unattended sessions: any ntfy topic URL,
+# e.g. "https://ntfy.sh/<long-random-topic>". Check it with `cachybench test-notify`.
+notify_url = ""
 
 
 # ---------------------------------------------------------------------------
