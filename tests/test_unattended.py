@@ -103,6 +103,7 @@ class NotifyTests(unittest.TestCase):
     def test_push_posts_title_and_message(self) -> None:
         server = http.server.HTTPServer(("127.0.0.1", 0), _Recorder)
         threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         url = f"http://127.0.0.1:{server.server_port}/topic"
 

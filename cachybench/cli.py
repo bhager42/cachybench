@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import gamesettings, metrics, notify, report, runners, sysinfo
+from . import gamesettings, inputseq, metrics, notify, report, runners, sysinfo
 from .config import Config, ConfigError, GameTarget, SyntheticTarget, load as load_config
 
 VERSION = "1.0.0"
@@ -266,6 +266,20 @@ def _run_game_loop(
     cool = target.resolve(cfg.defaults, "cooldown_s")
     trim_start = target.resolve(cfg.defaults, "trim_start_s")
     trim_end = target.resolve(cfg.defaults, "trim_end_s")
+    steps = target.steps
+    waits_for_keypress = target.mode in ("manual", "scripted")
+
+    if steps:
+        if not shutil.which("ydotool"):
+            message = "input_sequence needs ydotool — sudo pacman -S ydotool"
+            error(message)
+            result["errors"].append(message)
+            return
+        if inputseq.ydotool_socket() is None:
+            warn(
+                "ydotoold does not appear to be running, so keypresses will probably fail. "
+                "Start it with: systemctl --user enable --now ydotool"
+            )
 
     for run_index in range(1, total_runs + 1):
         log(f"{BOLD}Run {run_index}/{total_runs}{RESET}")
@@ -274,9 +288,10 @@ def _run_game_loop(
             shutil.rmtree(run_dir)
         run_dir.mkdir(parents=True)
 
-        # Manual mode leaves logging to the in-game keybind, because the delay
-        # between launch and the benchmark actually starting is unpredictable.
-        autostart = 0 if target.mode == "manual" else warmup
+        # Manual and scripted modes leave logging to the Shift+F2 keybind,
+        # because the delay between launch and the benchmark actually starting
+        # is unpredictable.
+        autostart = 0 if waits_for_keypress else warmup
         write_conf(run_dir, autostart, duration, cfg.defaults.mangohud_extra)
 
         if managed is not None:
@@ -304,6 +319,14 @@ def _run_game_loop(
             )
             clear_status()
             ok("Game is running")
+
+            if steps:
+                log(f"Playing input sequence ({len(steps)} steps)")
+                inputseq.play(
+                    steps,
+                    alive=_alive_check(install_dir, target.process_hint),
+                    on_step=lambda text: log(text, prefix="  ›"),
+                )
 
             if target.mode == "builtin":
                 log(f"Waiting for the built-in benchmark to finish (timeout {run_timeout}s)")
@@ -339,6 +362,14 @@ def _run_game_loop(
                 clear_status()
                 runners.terminate_game(install_dir, target.process_hint)
 
+            elif target.mode == "scripted":
+                # The sequence has already pressed Shift+F2; what is left is the
+                # logging window itself.
+                log(f"Capturing {duration}s")
+                log_path = wait_for_log(run_dir, min(run_timeout, duration + 60))
+                clear_status()
+                runners.terminate_game(install_dir, target.process_hint)
+
             else:  # timed
                 budget = warmup + duration + 120
                 log(f"Capturing {duration}s after a {warmup}s warm-up")
@@ -346,7 +377,7 @@ def _run_game_loop(
                 clear_status()
                 runners.terminate_game(install_dir, target.process_hint)
 
-        except runners.RunnerError as exc:
+        except (runners.RunnerError, inputseq.SequenceError) as exc:
             clear_status()
             error(str(exc))
             result["errors"].append(f"run {run_index}: {exc}")
@@ -367,13 +398,14 @@ def _run_game_loop(
             )
             error(message)
             result["errors"].append(message)
-            if target.mode == "manual":
-                # Either nobody is there to press Shift+F2 or the overlay is not
-                # attaching; the remaining runs would fail the same way.
+            if waits_for_keypress:
+                # Nobody is there to press Shift+F2, the input sequence no longer
+                # matches the menus, or the overlay is not attaching; the
+                # remaining runs would fail the same way.
                 skipped = total_runs - run_index
                 if skipped:
                     message = (
-                        f"No log from manual run {run_index} — skipping the remaining "
+                        f"No log from {target.mode} run {run_index} — skipping the remaining "
                         f"{skipped} run(s) of {target.name}"
                     )
                     warn(message)
@@ -408,6 +440,22 @@ def _run_game_loop(
         if run_index < total_runs and cool:
             runners.cooldown(cool, cfg.defaults.cooldown_temp_c, on_tick=status)
             clear_status()
+
+
+def _alive_check(install_dir: Path, process_hint: str) -> Any:
+    """A liveness probe that tolerates one empty poll.
+
+    Proton games briefly show no matching process while the launcher hands
+    off to the game, which must not read as a crash.
+    """
+    misses = 0
+
+    def alive() -> bool:
+        nonlocal misses
+        misses = 0 if runners.find_game_processes(install_dir, process_hint) else misses + 1
+        return misses < 2
+
+    return alive
 
 
 def _settings_held(
@@ -540,11 +588,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     for target in targets:
         runs = target.resolve(cfg.defaults, "runs")
         if isinstance(target, GameTarget):
-            per_run = (
-                target.resolve(cfg.defaults, "warmup_s")
-                + target.resolve(cfg.defaults, "log_duration_s")
-                + 90
+            lead_in = (
+                int(inputseq.total_wait(target.steps))
+                if target.mode == "scripted"
+                else target.resolve(cfg.defaults, "warmup_s")
             )
+            per_run = lead_in + target.resolve(cfg.defaults, "log_duration_s") + 90
             detail = f"{target.mode}, appid {target.appid}"
         else:
             per_run = 120
@@ -853,6 +902,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     str(install) if install else f"appid {game.appid} not installed",
                     fatal=False,
                 )
+                if game.input_sequence:
+                    socket = inputseq.ydotool_socket()
+                    if not shutil.which("ydotool"):
+                        ready, detail = False, "sudo pacman -S ydotool"
+                    elif socket is None:
+                        ready, detail = False, "ydotoold not running: systemctl --user enable --now ydotool"
+                    else:
+                        ready, detail = True, str(socket)
+                    check("    ydotool for input_sequence", ready, detail, fatal=False)
                 if game.settings is not None:
                     passed, detail = _check_settings(game)
                     check(f"    settings ({game.settings.handler})", passed, detail, fatal=False)

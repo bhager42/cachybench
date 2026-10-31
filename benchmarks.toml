@@ -41,6 +41,12 @@ notify_url = ""
 #                   benchmark land here, because their benchmark lives behind a
 #                   settings menu with no command-line entry point.
 #
+# mode = "scripted" Like manual, but cachybench presses the keys: it replays
+#                   `input_sequence` through ydotool after each launch to walk
+#                   the menus, start the benchmark and press Shift+F2 ("log").
+#                   Fully hands-off once the sequence is recorded; see
+#                   "Scripting a menu" in the README.
+#
 # Before trusting `launch_args`, check the game's page on pcgamingwiki.com —
 # benchmark flags vary by title and by version, and a wrong flag usually just
 # launches the game normally.
@@ -84,6 +90,26 @@ warmup_s = 60
 log_duration_s = 120
 enabled = false
 notes = "Load a workshop benchmark map or an aim_botz-style map before running"
+
+# A scripted entry. The keys and timings below are placeholders: record the
+# real path through your game's menus by hand, then check it with
+#   cachybench run --only "Some Menu Benchmark" --runs 1
+# [[game]]
+# name = "Some Menu Benchmark"
+# appid = 000000
+# mode = "scripted"
+# log_duration_s = 60
+# input_sequence = [
+#     "wait 45",       # loading and intro videos; be generous
+#     "key enter",     # skip the title screen
+#     "wait 3",
+#     "key down x4",   # to Settings
+#     "key enter",
+#     "wait 2",
+#     "key e",         # the menu's "Run benchmark" hotkey
+#     "wait 15",       # benchmark scene loads and settles
+#     "log",           # Shift+F2: start the measured window
+# ]
 
 # A worked example of a fully hands-off entry. Only fill in launch_args once
 # you have confirmed the flag works by running the game with it by hand.

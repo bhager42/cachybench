@@ -78,7 +78,7 @@ you Ctrl-C or the script crashes.
 
 ---
 
-## The three run modes
+## The run modes
 
 `mode` on each `[[game]]` decides how much you have to do.
 
@@ -87,24 +87,116 @@ you Ctrl-C or the script crashes.
 | `builtin` | Game is launched with a benchmark flag, runs, and exits on its own. The script waits for the process to disappear. | Fully |
 | `timed` | Script logs a fixed window, then closes the game. | Fully |
 | `manual` | Script launches the game; you navigate to the benchmark and press **Shift+F2**; logging stops itself after `log_duration_s` and the script closes the game. If nothing is logged within `manual_start_timeout_s` (5 minutes), the remaining runs of that game are skipped. | One keypress per run |
+| `scripted` | Like `manual`, but the script presses the keys for you: it replays an `input_sequence` of keypresses and waits that navigates the menus, starts the benchmark and presses Shift+F2. See [Scripting a menu](#scripting-a-menu). | Fully, once the sequence is recorded |
 
-Being straight about this: **most AAA games with a built-in benchmark are
-`manual`.** Cyberpunk 2077, Shadow of the Tomb Raider, Hitman and the rest put
-their benchmark behind a settings menu with no command-line entry point, and no
-script can navigate a menu reliably. What you get is still a large improvement —
-launching, timing, cooldown, log collection, statistics and reporting are all
-automated, and your involvement is one keypress instead of a stopwatch and a
-spreadsheet.
+Being straight about this: **most AAA games with a built-in benchmark start
+out as `manual`.** Cyberpunk 2077, Shadow of the Tomb Raider, Hitman and the
+rest put their benchmark behind a settings menu with no command-line entry
+point. Launching, timing, cooldown, log collection, statistics and reporting
+are all automated anyway, so your involvement is one keypress per run instead
+of a stopwatch and a spreadsheet.
 
-If you want a session you can genuinely walk away from, build it out of
-`synthetic` entries and any `builtin` games you have. Those need nothing at all.
-See [Leaving it running](#leaving-it-running) for what happens when a `manual`
+To take that keypress away too, record the menu path once as a `scripted`
+sequence. It is a replay with fixed timings, not something that reads the
+screen, so a game patch that moves a menu breaks it. When that happens the run
+logs nothing and the rest of that game is skipped, so you lose minutes, not
+the session.
+
+`synthetic` entries and `builtin` games need nothing at all. See
+[Leaving it running](#leaving-it-running) for what happens when a `manual`
 game comes up and nobody is there.
 
 Before setting `launch_args` for a `builtin` entry, check the game on
 [PCGamingWiki](https://www.pcgamingwiki.com/) and confirm the flag works by
 running it by hand once. A wrong flag usually just launches the game normally,
 which looks like a hang.
+
+---
+
+## Scripting a menu
+
+A `scripted` game plays a fixed list of keypresses into the game after each
+launch:
+
+```toml
+[[game]]
+name = "Some Game"
+appid = 123456
+mode = "scripted"
+log_duration_s = 60
+input_sequence = [
+    "wait 45",        # loading, intro videos, shader compilation
+    "key enter",      # press any key / skip the title screen
+    "wait 3",
+    "key down x4",    # move to Settings
+    "key enter",
+    "wait 2",
+    "key e",          # the "Run benchmark" hotkey shown in the menu
+    "wait 15",        # benchmark scene loading, plus a warm-up
+    "log",            # Shift+F2: start the measured window
+]
+```
+
+Steps:
+
+| Step | Does |
+|---|---|
+| `wait 12.5` | Pause, in seconds. |
+| `key enter` | Press and release a key. |
+| `key alt+enter` | Press a combination. |
+| `key down x3` | Press the same key several times, a third of a second apart. |
+| `log` | Press MangoHud's Shift+F2 to start the capture. Put it where the benchmark has started and settled. Logging stops by itself after `log_duration_s`, then the game is closed. |
+
+Key names: letters, digits, `f1`–`f12`, `enter`, `esc`, `tab`, `space`,
+`backspace`, `up`/`down`/`left`/`right`, `pageup`/`pagedown`, `home`/`end`,
+`insert`/`delete`, `shift`/`ctrl`/`alt` (and `right…` variants), `super`.
+Run `cachybench run --dry-run` to check a sequence parses; a typo fails there
+and before any launch.
+
+Keyboard only. Mouse clicks are not supported, because absolute pointer
+positions are unreliable on Wayland. Nearly every game's menus can be driven
+with arrows, Enter and Esc, and many show hotkeys next to their buttons.
+
+**Setting up ydotool.** Keys are sent through `ydotool`, which creates a
+virtual keyboard in the kernel, so the game sees ordinary input. That works on
+Wayland, X11 and under Proton alike.
+
+```bash
+sudo pacman -S ydotool
+systemctl --user enable --now ydotool
+```
+
+The daemon needs write access to `/dev/uinput`. If `cachybench doctor` still
+reports it missing, or ydotool reports a permission error, add a udev rule and
+put yourself in the `input` group, then log out and back in:
+
+```bash
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' | sudo tee /etc/udev/rules.d/60-uinput.rules
+```
+
+```bash
+sudo usermod -aG input "$USER"
+```
+
+**Recording a sequence.** Play through the menu path by hand with a stopwatch
+and write down every key, then try it one run at a time while you watch:
+
+```bash
+cachybench run --only "Some Game" --runs 1
+```
+
+Each step is printed as it plays, so you can see where it goes wrong. Be
+generous with the first `wait`: load times vary between runs, cold caches and
+reboots, and a key pressed while the game is still loading is lost. Allow a
+few seconds after every menu change for its animation.
+
+Keys go to whichever window has focus. Do not use the machine while a
+scripted game is running, and run the game fullscreen so nothing else can be
+on top of it. If the game exits during the sequence, the remaining steps are
+not sent.
+
+If you changed MangoHud's `toggle_logging` keybind in `mangohud_extra`, the
+`log` step will not match it; leave it on Shift+F2.
 
 ---
 

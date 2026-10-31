@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import inputseq
+
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:  # pragma: no cover
@@ -54,7 +56,7 @@ class GameSettings:
 class GameTarget:
     name: str
     appid: int
-    mode: str = "timed"  # "timed" | "builtin" | "manual"
+    mode: str = "timed"  # "timed" | "builtin" | "manual" | "scripted"
     launch_args: str = ""
     runs: int | None = None
     warmup_s: int | None = None
@@ -66,6 +68,7 @@ class GameTarget:
     trim_start_s: float | None = None
     trim_end_s: float | None = None
     process_hint: str = ""
+    input_sequence: list[str] = field(default_factory=list)
     settings: GameSettings | None = None
     notes: str = ""
     enabled: bool = True
@@ -74,6 +77,10 @@ class GameTarget:
     def resolve(self, defaults: Defaults, key: str) -> Any:
         value = getattr(self, key, None)
         return getattr(defaults, key) if value is None else value
+
+    @property
+    def steps(self) -> list[inputseq.Step]:
+        return inputseq.parse(self.input_sequence)
 
 
 @dataclass
@@ -125,7 +132,7 @@ class Config:
         return targets
 
 
-VALID_GAME_MODES = {"timed", "builtin", "manual"}
+VALID_GAME_MODES = {"timed", "builtin", "manual", "scripted"}
 
 
 def _known_fields(cls: type) -> set[str]:
@@ -156,6 +163,24 @@ def _build_settings(data: Any, label: str) -> GameSettings:
     return _build(GameSettings, data, label)
 
 
+def _check_sequence(game: GameTarget, label: str) -> None:
+    try:
+        steps = game.steps
+    except inputseq.SequenceError as exc:
+        raise ConfigError(f"{label}: {exc}") from None
+    starts_log = any(step.kind == "log" for step in steps)
+    if game.mode == "scripted" and not starts_log:
+        raise ConfigError(
+            f"{label}: a scripted game needs an input_sequence with a 'log' step, "
+            "placed where the benchmark has started"
+        )
+    if game.mode != "scripted" and starts_log:
+        raise ConfigError(
+            f"{label}: 'log' steps only belong in mode = \"scripted\"; "
+            f"in {game.mode} mode logging is already started for you"
+        )
+
+
 def load(path: str | Path) -> Config:
     path = Path(path).expanduser()
     if not path.is_file():
@@ -179,6 +204,7 @@ def load(path: str | Path) -> Config:
             raise ConfigError(
                 f"{label}: mode '{game.mode}' invalid; use one of {sorted(VALID_GAME_MODES)}"
             )
+        _check_sequence(game, label)
         games.append(game)
 
     synthetics: list[SyntheticTarget] = []
